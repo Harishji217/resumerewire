@@ -18,7 +18,9 @@ export async function POST(req) {
 
     let pdfParse;
     try {
-      pdfParse = (await import('pdf-parse')).default;
+      // NB: import the lib entry directly — the package root runs debug
+      // code that reads a test file from disk and crashes on Vercel.
+      pdfParse = (await import('pdf-parse/lib/pdf-parse.js')).default;
     } catch {
       return NextResponse.json(
         { error: 'pdf-parse is not installed. Run npm install.' },
@@ -31,12 +33,37 @@ export async function POST(req) {
     // - rejoin words broken by hyphenation at line ends ("perfor-\nmance")
     // - collapse the hard line breaks pdf-parse keeps mid-sentence
     //   (PDFs have no paragraph concept; every visual line becomes \n)
+    // - LinkedIn PDFs are two-column: a date line belongs to the job
+    //   listed above/below it, so we re-associate "Job Title / Company /
+    //   Jan 2020 - Present" triplets explicitly for the AI.
     const raw = (data.text || '').trim();
-    const text = raw
-      .replace(/(\w)-\n(\w)/g, '$1$2')        // de-hyphenate
-      .replace(/([a-z,;])\n(?=[a-z(])/g, '$1 ') // join sentence-internal breaks
-      .replace(/\n{2,}/g, '\n')               // collapse blank-line runs
-      .replace(/[ \t]+/g, ' ')
+    const lines = raw
+      .split('\n')
+      .map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    const dateLine = (l) =>
+      /^((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\d{4})\s*(–|—|-|to)\s*((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\d{4}|present)$/i.test(
+        l
+      );
+
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (dateLine(l) && out.length) {
+        // Attach the date to the previous line (role/company) so the
+        // AI sees "Web Developer — Company | Jan 2020 – Present"
+        out[out.length - 1] = `${out[out.length - 1]} | ${l}`;
+      } else {
+        out.push(l);
+      }
+    }
+
+    const text = out
+      .join('\n')
+      .replace(/(\w)-\n(\w)/g, '$1$2')
+      .replace(/([a-z,;])\n(?=[a-z(])/g, '$1 ')
+      .replace(/\n{2,}/g, '\n')
       .slice(0, 30000);
 
     if (!text) {

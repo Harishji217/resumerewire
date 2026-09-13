@@ -16,12 +16,15 @@ async function callOpenRouter(models, systemPrompt, userText, apiKey) {
           { role: 'user', content: userText },
         ],
         temperature: 0.4,
+        // Cap output length — generation time is dominated by output
+        // tokens, and 2200 is ample for a 1-2 page resume JSON.
+        max_tokens: 2200,
       };
 
-      // Hard cap: 45s per model. Free models queue under load; without
+      // Hard cap: 25s per model. Free models queue under load; without
       // this the user waits on a single hung request forever.
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 45000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
 
       const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -99,14 +102,12 @@ export async function POST(req) {
 
   const model = process.env.AI_MODEL || 'google/gemma-4-26b-a4b-it:free';
 
-  // Fallback chain of free models — if the primary fails (rate limit,
-  // unsupported params, transient error), we try the next one.
-  // All are plain-text chat models: PDFs are parsed to text server-side
-  // before reaching the AI, so no multimodal support is needed.
+  // Fallback chain of free models — max 3, so worst-case total wait
+  // stays under ~75s. All are plain-text chat models: PDFs and LinkedIn
+  // pages are parsed to text server-side before reaching the AI.
   const FALLBACK_MODELS = [
     model,
     'google/gemma-4-26b-a4b-it:free', // structured output support
-    'google/gemma-4-31b-it:free',     // strong document understanding
     'openrouter/free',                // auto-router over free models
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
