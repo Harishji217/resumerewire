@@ -1,6 +1,50 @@
 import { NextResponse } from 'next/server';
 import { demoResumeFromText } from '@/lib/resume';
 
+// Google AI Studio (Gemini) — free tier with PRIVATE per-key limits, far
+// more reliable than OpenRouter's shared free pool. Tried first when a
+// GEMINI_API_KEY is configured. Get one free at aistudio.google.com/apikey.
+async function callGemini(systemPrompt, userText, apiKey) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
+        encodeURIComponent(apiKey),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: userText }] }],
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 4000,
+            responseMimeType: 'application/json',
+          },
+        }),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Gemini error:', res.status, errText.slice(0, 300));
+      throw new Error(`Gemini: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!content) throw new Error('Gemini: empty response');
+    console.log('Generate OK via Gemini');
+    return { choices: [{ message: { content } }] };
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
 // Tries each model in order, one attempt each, with a hard timeout.
 // On a rate limit (429), waits briefly and retries that model once —
 // free-tier limits are often momentary, so a short backoff usually
@@ -93,6 +137,7 @@ export async function POST(req) {
   }
 
   const apiKey = process.env.OPENROUTER_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
 
   // Clean common copy-paste artifacts before sending to the AI
   const cleanedText = text
@@ -105,7 +150,7 @@ export async function POST(req) {
     .replace(/[ \t]+/g, ' ');
 
   // No key configured -> return demo resume so the whole flow is testable.
-  if (!apiKey) {
+  if (!apiKey && !geminiKey) {
     const demo = demoResumeFromText(cleanedText);
     return NextResponse.json({ resume: demo, demo: true });
   }
@@ -155,7 +200,25 @@ Return ONLY valid JSON, no markdown fences, in exactly this shape:
 }`;
 
   try {
-    const aiData = await callOpenRouter(FALLBACK_MODELS, systemPrompt, cleanedText, apiKey);
+    // Provider chain: Gemini (private free limits) first, then OpenRouter
+    // free models. Whoever succeeds first wins.
+    let aiData;
+    if (geminiKey) {
+      try {
+        aiData = await callGemini(systemPrompt, cleanedText, geminiKey);
+      } catch (geminiErr) {
+        console.error('Gemini failed, falling back to OpenRouter:', geminiErr.message);
+      }
+    }
+    if (!aiData && apiKey) {
+      aiData = await callOpenRouter(FALLBACK_MODELS, systemPrompt, cleanedText, apiKey);
+    }
+    if (!aiData) {
+      return NextResponse.json(
+        { error: 'No AI provider configured (set GEMINI_API_KEY or OPENROUTER_API_KEY)' },
+        { status: 500 }
+      );
+    }
 
     const content = aiData.choices?.[0]?.message?.content;
     if (!content) {

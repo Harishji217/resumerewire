@@ -31,52 +31,85 @@ export async function POST(req) {
   // Follow the canonical /in/ URL; strip trackers
   const cleanUrl = url.split('?')[0].replace(/\/$/, '');
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
-  try {
-    const res = await fetch(cleanUrl, {
+  // Try several fetch strategies in order — LinkedIn aggressively blocks
+  // server-side fetches, but the mobile endpoint and Google's cache have
+  // different (sometimes looser) rules.
+  const strategies = [
+    {
+      name: 'direct',
+      url: cleanUrl,
       headers: {
-        // Browser-like headers give the best chance of getting the
-        // public-profile page instead of the login wall
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      signal: controller.signal,
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
+    },
+    {
+      name: 'mobile',
+      url: cleanUrl.replace('//www.', '//m.'),
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    },
+    {
+      name: 'google-cache',
+      url: `https://webcache.googleusercontent.com/search?q=cache:${cleanUrl}`,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+        Accept: 'text/html',
+      },
+    },
+  ];
 
-    if (!res.ok) {
-      return NextResponse.json(
-        {
-          error:
-            'LinkedIn blocked the request (they limit automated access). ' +
-            'Instead: open your profile, press Ctrl+A then Ctrl+C, and paste the text here — same result.',
-        },
-        { status: 422 }
-      );
+  const BLOCKED_MSG =
+    'LinkedIn blocked the request (they limit automated access). ' +
+    'Instead: open your profile, press Ctrl+A then Ctrl+C, and paste the text here — same result.';
+
+  async function tryFetch(strategy) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(strategy.url, {
+        headers: strategy.headers,
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      clearTimeout(timeout);
+      if (!res.ok) return null;
+      const html = await res.text();
+      // Login-wall / block-page detection
+      const isWall =
+        /authwall|login\?|challenge\/|captcha/i.test(res.url || '') ||
+        /<title>[^<]*(Sign In|Log In|authwall|Just a moment)[^<]*<\/title>/i.test(html) ||
+        (!/og:title/i.test(html) && html.length < 40000);
+      if (isWall) return null;
+      return { html, finalUrl: res.url };
+    } catch {
+      clearTimeout(timeout);
+      return null;
+    }
+  }
+
+  try {
+    let result = null;
+    for (const strategy of strategies) {
+      result = await tryFetch(strategy);
+      if (result) {
+        console.log(`LinkedIn fetch OK via strategy: ${strategy.name}`);
+        break;
+      }
     }
 
-    const html = await res.text();
-
-    // Login-wall detection: redirected pages are short and lack profile meta
-    const isLoginWall =
-      /authwall|login\?/i.test(res.url || '') ||
-      (!/og:title"?\s+content="/i.test(html) && html.length < 40000);
-
-    if (isLoginWall) {
-      return NextResponse.json(
-        {
-          error:
-            'LinkedIn served a login wall for this profile (private or rate-limited). ' +
-            'Instead: open your profile, press Ctrl+A then Ctrl+C, and paste the text here — same result.',
-        },
-        { status: 422 }
-      );
+    if (!result) {
+      return NextResponse.json({ error: BLOCKED_MSG }, { status: 422 });
     }
+
+    const html = result.html;
 
     // Extract everything useful: OpenGraph meta tags first, then any
     // visible text content we can regex out of the public page.
@@ -164,7 +197,6 @@ export async function POST(req) {
       text: `LinkedIn profile data for ${siteName || 'profile'}:\n${scraped}`,
     });
   } catch (err) {
-    clearTimeout(timeout);
     console.error('LinkedIn fetch error:', err.message);
     return NextResponse.json(
       {
