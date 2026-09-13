@@ -152,6 +152,12 @@ export default function CreatePage() {
 
             {error ? <p className="form-error">{error}</p> : null}
 
+            {busy ? (
+              <p className="gen-progress">
+                Generating your resume… this usually takes 10–30 seconds.
+              </p>
+            ) : null}
+
             <button
               className="btn btn-accent btn-block"
               onClick={handleGenerate}

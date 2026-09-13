@@ -1,57 +1,57 @@
 import { NextResponse } from 'next/server';
 import { demoResumeFromText } from '@/lib/resume';
 
-// Tries each model in order. First successful response wins.
-// If a model rejects `response_format`, retries once without it.
+// Tries each model in order, one attempt each, with a hard timeout.
+// Fast-fails on rate limits (429) and moves to the next model.
 // Throws only if every model fails.
 async function callOpenRouter(models, systemPrompt, userText, apiKey) {
   let lastError;
 
   for (const model of models) {
-    // Attempt 1: with response_format; Attempt 2: without (some free
-    // models reject the structured-output parameter)
-    for (const useJsonFormat of [true, false]) {
-      try {
-        const body = {
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userText },
-          ],
-          temperature: 0.4,
-        };
-        if (useJsonFormat) body.response_format = { type: 'json_object' };
+    try {
+      const body = {
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userText },
+        ],
+        temperature: 0.4,
+      };
 
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': process.env.SITE_URL || 'http://localhost:3000',
-            'X-Title': 'ResumeRewire',
-          },
-          body: JSON.stringify(body),
-        });
+      // Hard cap: 45s per model. Free models queue under load; without
+      // this the user waits on a single hung request forever.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 45000);
 
-        if (!res.ok) {
-          const errText = await res.text();
-          console.error(`OpenRouter ${model} error:`, res.status, errText.slice(0, 300));
-          lastError = new Error(`${model}: ${res.status} ${errText.slice(0, 200)}`);
-          // Rate limit / quota — skip straight to the next model
-          if (res.status === 429) break;
-          continue;
-        }
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': process.env.SITE_URL || 'http://localhost:3000',
+          'X-Title': 'ResumeRewire',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-        const data = await res.json();
-        if (data.choices?.[0]?.message?.content) {
-          console.log(`Generate OK via model: ${model}`);
-          return data;
-        }
-        lastError = new Error(`${model}: empty response`);
-      } catch (err) {
-        console.error(`OpenRouter ${model} request failed:`, err.message);
-        lastError = err;
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`OpenRouter ${model} error:`, res.status, errText.slice(0, 300));
+        lastError = new Error(`${model}: ${res.status} ${errText.slice(0, 200)}`);
+        continue; // next model immediately
       }
+
+      const data = await res.json();
+      if (data.choices?.[0]?.message?.content) {
+        console.log(`Generate OK via model: ${model}`);
+        return data;
+      }
+      lastError = new Error(`${model}: empty response`);
+    } catch (err) {
+      console.error(`OpenRouter ${model} request failed:`, err.message);
+      lastError = err;
     }
   }
   throw lastError || new Error('All models failed');
