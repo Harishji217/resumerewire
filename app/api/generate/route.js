@@ -115,13 +115,16 @@ export async function POST(req) {
 Rules:
 - Extract real facts only from the text. Never invent employers, degrees, dates, or metrics. If details are missing, leave fields empty rather than fabricating.
 - MANDATORY: every role, job, internship or freelance engagement mentioned in the text MUST appear in the experience array. LinkedIn profiles have an "Experience" section — capture EVERY entry in it, with its exact dates and description. If no company name is given, use "Freelance" / "Self-employed". Never return an empty experience array if the text mentions any work.
-- Use EVERYTHING useful in the text — interests, side projects, self-descriptions, languages, certifications — a resume must look complete and professional, not thin. Aim for a full page.
-- For each experience entry, write 3-5 substantive bullet points. Draw out every distinct responsibility or achievement implied by the text (e.g. "I create incredibly good websites for recruiters, local businesses, and big tech companies" implies client delivery, requirement gathering, responsive design, stakeholder communication). Split compound sentences into separate bullets. You may polish and expand wording, but every bullet must be traceable to the text.
-- summary: 3-4 sentences positioning the person for their target role, written in first person implied tone (no "I" spam), pulling in their stated interests and focus areas.
-- skills: flat array of concrete skills/tools/domains, max 15. Preserve ALL skills mentioned in the text.
-- languages: array of {name, proficiency} from the text if present.
+- CONSISTENT DEPTH: produce the same rich output whether the input is a pasted profile or a PDF resume. Even if the source describes a role in one thin sentence, decompose it into 3-4 substantive bullets covering distinct aspects implied by that sentence (client delivery, requirements gathering, design, technology, quality standards, stakeholder communication, maintenance). Every bullet must be traceable to the text, but express each distinct facet separately rather than one dense sentence.
+- LENGTH BUDGET: the final resume MUST fit on 1-2 A4 pages, never more. Total: at most 2 experience entries with 3-4 bullets each, summary max 3 sentences, skills max 12, at most 2 projects. If the text contains more roles than fit, keep the most recent/important ones. Prioritize substance over padding — never pad to fill space.
+- Expand skills thoughtfully: include every skill, tool, domain and competency mentioned or clearly implied by the work described (e.g. building websites implies Web Design, Responsive Design, SEO fundamentals). Max 12, no duplicates or near-duplicates.
+- languages: array of {name, proficiency} — extract from the text if present, with exact proficiency wording when given (e.g. "Full Professional", "Native or Bilingual").
+- Use EVERYTHING useful in the text — interests, side projects, self-descriptions, certifications — a resume must look complete and professional, not thin. Aim for a full page.
+- For each experience entry, write 3-4 substantive bullet points. Split compound sentences into separate bullets. You may polish and expand wording, but every bullet must be traceable to the text.
+- Every project, portfolio site, or client deliverable mentioned (even inside experience descriptions) should ALSO appear in the projects array with a name and description. At most 2 projects.
+- summary: 3-4 sentences positioning the person for their target role, written in third person, pulling in their stated interests and focus areas.
 - Dates format: "Jul 2023" style, or years. Keep date ranges as given.
-- Clean up HTML entities (&amp; -> and) and artifacts from copy-paste.
+- Clean up HTML entities (&amp; -> and) and artifacts from copy-paste or PDF extraction (stray hyphens mid-word, broken line fragments).
 - title: a single professional line, e.g. "AI Builder & Web Developer". If the text has a multi-part headline, condense it.
 
 Return ONLY valid JSON, no markdown fences, in exactly this shape:
