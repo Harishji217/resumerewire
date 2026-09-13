@@ -201,46 +201,62 @@ Return ONLY valid JSON, no markdown fences, in exactly this shape:
 
   try {
     // Provider chain: Gemini (private free limits) first, then OpenRouter
-    // free models. Whoever succeeds first wins.
-    let aiData;
+    // free models. Whoever succeeds first wins. A provider that returns
+    // unparseable JSON counts as a failure — we try the next one.
+    const attempts = [];
     if (geminiKey) {
-      try {
-        aiData = await callGemini(systemPrompt, cleanedText, geminiKey);
-      } catch (geminiErr) {
-        console.error('Gemini failed, falling back to OpenRouter:', geminiErr.message);
-      }
+      attempts.push(() => callGemini(systemPrompt, cleanedText, geminiKey));
     }
-    if (!aiData && apiKey) {
-      aiData = await callOpenRouter(FALLBACK_MODELS, systemPrompt, cleanedText, apiKey);
+    if (apiKey) {
+      attempts.push(() =>
+        callOpenRouter(FALLBACK_MODELS, systemPrompt, cleanedText, apiKey)
+      );
     }
-    if (!aiData) {
+    if (!attempts.length) {
       return NextResponse.json(
         { error: 'No AI provider configured (set GEMINI_API_KEY or OPENROUTER_API_KEY)' },
         { status: 500 }
       );
     }
 
-    const content = aiData.choices?.[0]?.message?.content;
-    if (!content) {
-      return NextResponse.json(
-        { error: 'Empty response from AI' },
-        { status: 502 }
-      );
+    let parsed = null;
+    let lastError = null;
+    for (const attempt of attempts) {
+      try {
+        const aiData = await attempt();
+        const content = aiData.choices?.[0]?.message?.content;
+        if (!content) throw new Error('empty response');
+
+        try {
+          parsed = JSON.parse(content);
+        } catch {
+          // Some models wrap JSON in fences despite instructions
+          const match = content.match(/\{[\s\S]*\}/);
+          if (!match) throw new Error('malformed JSON');
+          try {
+            parsed = JSON.parse(match[0]);
+          } catch {
+            throw new Error('malformed JSON');
+          }
+        }
+        if (parsed) break; // success
+      } catch (err) {
+        console.error('AI provider failed:', err.message);
+        lastError = err;
+        // next provider
+      }
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      // Some models wrap JSON in fences despite instructions
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) {
-        return NextResponse.json(
-          { error: 'AI returned malformed JSON' },
-          { status: 502 }
-        );
-      }
-      parsed = JSON.parse(match[0]);
+    if (!parsed) {
+      // All providers failed or returned garbage — fall back to the
+      // parser draft rather than hard-failing
+      return NextResponse.json({
+        resume: demoResumeFromText(text),
+        demo: true,
+        notice:
+          'The AI service was busy, so this is a quick draft parsed from your text. ' +
+          'Try generating again in a minute for the fully written version.',
+      });
     }
 
     // Safety net: coerce the AI's output into well-formed arrays so the

@@ -67,8 +67,9 @@ export async function POST(req) {
   ];
 
   const BLOCKED_MSG =
-    'LinkedIn blocked the request (they limit automated access). ' +
-    'Instead: open your profile, press Ctrl+A then Ctrl+C, and paste the text here — same result.';
+    'LinkedIn limits what we can read automatically. Two easy options that take 10 seconds:\n\n' +
+    '1. On your LinkedIn profile, click "More" → "Save to PDF", then upload that file in the Upload PDF tab — this gives the best result.\n' +
+    '2. Or open your profile, press Ctrl+A then Ctrl+C, and paste the text in the Paste text tab.';
 
   async function tryFetch(strategy) {
     const controller = new AbortController();

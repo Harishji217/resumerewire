@@ -7,9 +7,8 @@ import { track } from '@/lib/track';
 
 export default function CreatePage() {
   const router = useRouter();
-  const [mode, setMode] = useState('paste'); // 'paste' | 'url' | 'upload'
+  const [mode, setMode] = useState('paste'); // 'paste' | 'upload'
   const [text, setText] = useState('');
-  const [url, setUrl] = useState('');
   const [file, setFile] = useState(null);
   const [templateId, setTemplateId] = useState('modern');
   const [busy, setBusy] = useState(false);
@@ -55,26 +54,6 @@ export default function CreatePage() {
         setError(err.message);
         return;
       }
-    } else if (mode === 'url') {
-      if (!url.trim()) {
-        setError('Paste your LinkedIn profile URL first.');
-        return;
-      }
-      setBusy(true);
-      try {
-        const res = await fetch('/api/linkedin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
-        });
-        const data = await safeJson(res);
-        if (!res.ok) throw new Error(data.error || 'LinkedIn fetch failed');
-        inputText = data.text;
-      } catch (err) {
-        setBusy(false);
-        setError(err.message);
-        return;
-      }
     } else if (!text.trim()) {
       setError('Paste your LinkedIn profile or resume text first.');
       return;
@@ -90,7 +69,7 @@ export default function CreatePage() {
       const data = await safeJson(res);
       if (!res.ok) throw new Error(data.error || 'Generation failed');
 
-      track('generate', mode === 'upload' ? 'pdf' : mode === 'url' ? 'linkedin' : 'paste');
+      track('generate', mode === 'upload' ? 'pdf' : 'paste');
 
       if (data.notice) {
         // Non-blocking: tell the user this is a fallback draft, but
@@ -132,8 +111,8 @@ export default function CreatePage() {
           <p className="eyebrow">New resume</p>
           <h1>Tell us about you</h1>
           <p className="create-sub">
-            Drop your LinkedIn profile URL, paste your profile text, or upload
-            an existing resume PDF — whatever&apos;s easiest.
+            Paste your LinkedIn profile text, or upload an existing resume
+            PDF — whatever&apos;s easiest.
           </p>
         </div>
 
@@ -146,12 +125,6 @@ export default function CreatePage() {
                 onClick={() => setMode('paste')}
               >
                 Paste text
-              </button>
-              <button
-                className={mode === 'url' ? 'mode-tab active' : 'mode-tab'}
-                onClick={() => setMode('url')}
-              >
-                LinkedIn URL
               </button>
               <button
                 className={mode === 'upload' ? 'mode-tab active' : 'mode-tab'}
@@ -175,23 +148,9 @@ export default function CreatePage() {
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                 />
-              </div>
-            ) : mode === 'url' ? (
-              <div>
-                <div className="field">
-                  <label htmlFor="liurl">Your LinkedIn profile URL</label>
-                  <input
-                    id="liurl"
-                    type="text"
-                    placeholder="linkedin.com/in/your-name"
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                  />
-                </div>
                 <p className="file-note">
-                  We&apos;ll read your public profile automatically. If
-                  LinkedIn blocks it (they often do), you&apos;ll get a
-                  one-tap fallback to copy-paste — same result.
+                  Tip: on your LinkedIn profile click More → Save to PDF,
+                  then use the Upload PDF tab — that gives the richest input.
                 </p>
               </div>
             ) : (
