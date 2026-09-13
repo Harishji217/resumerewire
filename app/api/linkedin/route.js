@@ -12,10 +12,18 @@ export async function POST(req) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const url = (body.url || '').trim();
+  // Accept URLs with or without scheme — most people paste bare domains
+  let url = (body.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    url = 'https://' + url.replace(/^\/+/, '');
+  }
   if (!/^https?:\/\/(www\.)?linkedin\.com\/in\/[\w\-%.]+/i.test(url)) {
     return NextResponse.json(
-      { error: 'That does not look like a LinkedIn profile URL (it should be like linkedin.com/in/your-name).' },
+      {
+        error:
+          'That does not look like a LinkedIn profile URL — it should be like linkedin.com/in/your-name. ' +
+          'Tip: copy it from the address bar on your profile page.',
+      },
       { status: 400 }
     );
   }

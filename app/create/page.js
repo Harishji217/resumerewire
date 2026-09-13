@@ -92,6 +92,12 @@ export default function CreatePage() {
 
       track('generate', mode === 'upload' ? 'pdf' : mode === 'url' ? 'linkedin' : 'paste');
 
+      if (data.notice) {
+        // Non-blocking: tell the user this is a fallback draft, but
+        // still take them to the editor
+        alert(data.notice);
+      }
+
       // Stash the generated resume for the editor page
       sessionStorage.setItem('better_resume_pending', JSON.stringify({
         ...data.resume,
@@ -176,8 +182,8 @@ export default function CreatePage() {
                   <label htmlFor="liurl">Your LinkedIn profile URL</label>
                   <input
                     id="liurl"
-                    type="url"
-                    placeholder="https://www.linkedin.com/in/your-name"
+                    type="text"
+                    placeholder="linkedin.com/in/your-name"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
                   />

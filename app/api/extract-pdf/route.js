@@ -29,37 +29,15 @@ export async function POST(req) {
     }
 
     const data = await pdfParse(buffer);
-    // Normalize PDF extraction artifacts so the AI gets clean input:
-    // - rejoin words broken by hyphenation at line ends ("perfor-\nmance")
-    // - collapse the hard line breaks pdf-parse keeps mid-sentence
-    //   (PDFs have no paragraph concept; every visual line becomes \n)
-    // - LinkedIn PDFs are two-column: a date line belongs to the job
-    //   listed above/below it, so we re-associate "Job Title / Company /
-    //   Jan 2020 - Present" triplets explicitly for the AI.
+    // LinkedIn's PDF is a two-column layout that extracts poorly. Chasing
+    // it with regexes makes things worse (mis-joined dates, duplicated
+    // role/company). Instead: do MINIMAL cleanup and let the AI do the
+    // structuring — the same reason paste-mode works so well.
     const raw = (data.text || '').trim();
-    const lines = raw
+    const text = raw
       .split('\n')
       .map((l) => l.replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
-
-    const dateLine = (l) =>
-      /^((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\d{4})\s*(–|—|-|to)\s*((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\d{4}|present)$/i.test(
-        l
-      );
-
-    const out = [];
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i];
-      if (dateLine(l) && out.length) {
-        // Attach the date to the previous line (role/company) so the
-        // AI sees "Web Developer — Company | Jan 2020 – Present"
-        out[out.length - 1] = `${out[out.length - 1]} | ${l}`;
-      } else {
-        out.push(l);
-      }
-    }
-
-    const text = out
+      .filter((l) => l && !/^page \d+ of \d+$/i.test(l))
       .join('\n')
       .replace(/(\w)-\n(\w)/g, '$1$2')
       .replace(/([a-z,;])\n(?=[a-z(])/g, '$1 ')
