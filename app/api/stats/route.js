@@ -1,8 +1,10 @@
 import { promises as fs } from 'fs';
+import os from 'os';
 import path from 'path';
 import { NextResponse } from 'next/server';
 
-const EVENTS_FILE = path.join(process.cwd(), '.analytics', 'events.jsonl');
+// Must match the path used by /api/track (OS temp dir — writable on Vercel)
+const EVENTS_FILE = path.join(os.tmpdir(), 'resumerewire-events.jsonl');
 
 // GET /api/stats?token=ADMIN_TOKEN
 // Returns aggregated usage stats. The token is set via ADMIN_TOKEN in

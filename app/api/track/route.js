@@ -1,10 +1,13 @@
 import { promises as fs } from 'fs';
+import os from 'os';
 import path from 'path';
 
 // Tiny file-based analytics: appends one line of JSON per event.
-// Stored at .analytics/events.jsonl (gitignored). For a hobby project
-// this is plenty; swap for a real DB if traffic ever gets serious.
-const EVENTS_FILE = path.join(process.cwd(), '.analytics', 'events.jsonl');
+// Writes to the OS temp dir — the only writable location on Vercel's
+// read-only serverless filesystem. NB: /tmp is per-instance and
+// ephemeral, so counts are approximate on serverless; for exact
+// numbers use Vercel Web Analytics (free toggle in the dashboard).
+const EVENTS_FILE = path.join(os.tmpdir(), 'resumerewire-events.jsonl');
 
 export async function POST(req) {
   try {
@@ -12,9 +15,6 @@ export async function POST(req) {
     if (typeof event !== 'string' || event.length > 50) {
       return Response.json({ ok: false }, { status: 400 });
     }
-
-    const dir = path.dirname(EVENTS_FILE);
-    await fs.mkdir(dir, { recursive: true });
 
     const record = {
       t: new Date().toISOString(),
@@ -26,7 +26,8 @@ export async function POST(req) {
 
     return Response.json({ ok: true });
   } catch (err) {
-    console.error('Track error:', err);
-    return Response.json({ ok: false }, { status: 500 });
+    // Analytics must NEVER break the app — swallow and report ok
+    console.error('Track error (ignored):', err.message);
+    return Response.json({ ok: true });
   }
 }
