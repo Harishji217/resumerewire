@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.env.local
+.env*.local
+.analytics/
+deploy.bat
+.repo.json
+.repo-response.json
