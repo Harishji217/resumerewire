@@ -5,44 +5,61 @@ import { demoResumeFromText } from '@/lib/resume';
 // more reliable than OpenRouter's shared free pool. Tried first when a
 // GEMINI_API_KEY is configured. Get one free at aistudio.google.com/apikey.
 async function callGemini(systemPrompt, userText, apiKey) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  try {
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
-        encodeURIComponent(apiKey),
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: 'user', parts: [{ text: userText }] }],
-          generationConfig: {
-            temperature: 0.4,
-            maxOutputTokens: 4000,
-            responseMimeType: 'application/json',
-          },
-        }),
-        signal: controller.signal,
+  const models = [
+    process.env.GEMINI_MODEL,
+    'gemini-flash-lite-latest',
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-flash-latest',
+  ].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
+  let lastError;
+  for (const model of models) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=` +
+          encodeURIComponent(apiKey),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: userText }] }],
+            generationConfig: {
+              temperature: 0.4,
+              maxOutputTokens: 4000,
+              responseMimeType: 'application/json',
+            },
+          }),
+          signal: controller.signal,
+        }
+      );
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`Gemini ${model} error:`, res.status, errText.slice(0, 300));
+        lastError = new Error(`Gemini ${model}: ${res.status}`);
+        continue;
       }
-    );
-    clearTimeout(timeout);
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error('Gemini error:', res.status, errText.slice(0, 300));
-      throw new Error(`Gemini: ${res.status}`);
+      const data = await res.json();
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!content) {
+        lastError = new Error(`Gemini ${model}: empty response`);
+        continue;
+      }
+      console.log(`Generate OK via Gemini model: ${model}`);
+      return { choices: [{ message: { content } }] };
+    } catch (err) {
+      clearTimeout(timeout);
+      console.error(`Gemini ${model} request failed:`, err.message);
+      lastError = err;
     }
-
-    const data = await res.json();
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!content) throw new Error('Gemini: empty response');
-    console.log('Generate OK via Gemini');
-    return { choices: [{ message: { content } }] };
-  } catch (err) {
-    clearTimeout(timeout);
-    throw err;
   }
+  throw lastError || new Error('All Gemini models failed');
 }
 
 // Tries each model in order, one attempt each, with a hard timeout.
