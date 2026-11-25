@@ -1,71 +1,90 @@
 import { NextResponse } from 'next/server';
-import { demoResumeFromText } from '@/lib/resume';
+import { cleanInputText, demoResumeFromText } from '@/lib/resume';
 
-// Google AI Studio (Gemini) — free tier with PRIVATE per-key limits, far
-// more reliable than OpenRouter's shared free pool. Tried first when a
-// GEMINI_API_KEY is configured. Get one free at aistudio.google.com/apikey.
+export const maxDuration = 60;
+
+// Google AI Studio (Gemini) — free tier with private per-key limits.
+// Cycles through active free Flash-Lite / Flash / Gemma models with short
+// retries on transient 503/429 spikes so temporary load never fails a request.
 async function callGemini(systemPrompt, userText, apiKey) {
   const models = [
     process.env.GEMINI_MODEL,
     'gemini-flash-lite-latest',
     'gemini-3.5-flash-lite',
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it',
     'gemini-3.8-flash',
     'gemini-flash-latest',
   ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
   let lastError;
   for (const model of models) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=` +
-          encodeURIComponent(apiKey),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents: [{ role: 'user', parts: [{ text: userText }] }],
-            generationConfig: {
-              temperature: 0.4,
-              maxOutputTokens: 4000,
-              responseMimeType: 'application/json',
-            },
-          }),
-          signal: controller.signal,
+    const isGemma = model.startsWith('gemma-');
+    const maxAttempts = model.includes('flash-lite') ? 2 : 1;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 16000);
+      try {
+        const payload = isGemma
+          ? {
+              contents: [
+                { role: 'user', parts: [{ text: systemPrompt + '\n\n--- SOURCE TEXT ---\n' + userText }] },
+              ],
+              generationConfig: { temperature: 0.3, maxOutputTokens: 2500 },
+            }
+          : {
+              systemInstruction: { parts: [{ text: systemPrompt }] },
+              contents: [{ role: 'user', parts: [{ text: userText }] }],
+              generationConfig: {
+                temperature: 0.3,
+                maxOutputTokens: 2500,
+                responseMimeType: 'application/json',
+              },
+            };
+
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=` +
+            encodeURIComponent(apiKey),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          }
+        );
+        clearTimeout(timeout);
+
+        if (!res.ok) {
+          const errText = await res.text();
+          console.error(`Gemini ${model} error:`, res.status, errText.slice(0, 300));
+          lastError = new Error(`Gemini ${model}: ${res.status}`);
+          if ((res.status === 503 || res.status === 429) && attempt + 1 < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          break;
         }
-      );
-      clearTimeout(timeout);
 
-      if (!res.ok) {
-        const errText = await res.text();
-        console.error(`Gemini ${model} error:`, res.status, errText.slice(0, 300));
-        lastError = new Error(`Gemini ${model}: ${res.status}`);
-        continue;
+        const data = await res.json();
+        const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!content) {
+          lastError = new Error(`Gemini ${model}: empty response`);
+          break;
+        }
+        console.log(`Generate OK via Gemini model: ${model}`);
+        return { choices: [{ message: { content } }] };
+      } catch (err) {
+        clearTimeout(timeout);
+        console.error(`Gemini ${model} request failed:`, err.message);
+        lastError = err;
+        break;
       }
-
-      const data = await res.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!content) {
-        lastError = new Error(`Gemini ${model}: empty response`);
-        continue;
-      }
-      console.log(`Generate OK via Gemini model: ${model}`);
-      return { choices: [{ message: { content } }] };
-    } catch (err) {
-      clearTimeout(timeout);
-      console.error(`Gemini ${model} request failed:`, err.message);
-      lastError = err;
     }
   }
   throw lastError || new Error('All Gemini models failed');
 }
 
-// Tries each model in order, one attempt each, with a hard timeout.
-// On a rate limit (429), waits briefly and retries that model once —
-// free-tier limits are often momentary, so a short backoff usually
-// succeeds instead of abandoning the model entirely.
 async function callOpenRouter(models, systemPrompt, userText, apiKey) {
   let lastError;
 
@@ -78,16 +97,12 @@ async function callOpenRouter(models, systemPrompt, userText, apiKey) {
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userText },
           ],
-          temperature: 0.4,
-          // Cap output length — generation time is dominated by output
-          // tokens, and 2200 is ample for a 1-2 page resume JSON.
+          temperature: 0.3,
           max_tokens: 2200,
         };
 
-        // Hard cap: 25s per model. Free models queue under load; without
-        // this the user waits on a single hung request forever.
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 25000);
+        const timeout = setTimeout(() => controller.abort(), 16000);
 
         const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -106,12 +121,11 @@ async function callOpenRouter(models, systemPrompt, userText, apiKey) {
           const errText = await res.text();
           console.error(`OpenRouter ${model} error:`, res.status, errText.slice(0, 300));
           lastError = new Error(`${model}: ${res.status} ${errText.slice(0, 200)}`);
-          // Momentary rate limit: brief backoff, one retry on this model
           if (res.status === 429 && attempt === 0) {
-            await new Promise((r) => setTimeout(r, 2500));
+            await new Promise((r) => setTimeout(r, 1500));
             continue;
           }
-          break; // next model
+          break;
         }
 
         const data = await res.json();
@@ -120,20 +134,18 @@ async function callOpenRouter(models, systemPrompt, userText, apiKey) {
           return data;
         }
         lastError = new Error(`${model}: empty response`);
-        break; // next model
+        break;
       } catch (err) {
         console.error(`OpenRouter ${model} request failed:`, err.message);
         lastError = err;
-        break; // next model
+        break;
       }
     }
   }
   throw lastError || new Error('All models failed');
 }
 
-
 // POST /api/generate
-// Body: { text: string }  ->  structured resume JSON
 export async function POST(req) {
   let body;
   try {
@@ -142,65 +154,49 @@ export async function POST(req) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const text = (body.text || '').trim();
-  if (!text) {
+  const rawText = (body.text || '').trim();
+  if (!rawText) {
     return NextResponse.json({ error: 'text is required' }, { status: 400 });
   }
-  if (text.length > 30000) {
+  if (rawText.length > 30000) {
     return NextResponse.json(
       { error: 'Text too long (max 30000 chars)' },
       { status: 400 }
     );
   }
 
+  const cleanedText = cleanInputText(rawText);
   const apiKey = process.env.OPENROUTER_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
 
-  // Clean common copy-paste artifacts before sending to the AI
-  const cleanedText = text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/ /g, ' ')
-    .replace(/[ \t]+/g, ' ');
-
-  // No key configured -> return demo resume so the whole flow is testable.
   if (!apiKey && !geminiKey) {
     const demo = demoResumeFromText(cleanedText);
     return NextResponse.json({ resume: demo, demo: true });
   }
 
-  const model = process.env.AI_MODEL || 'google/gemma-4-26b-a4b-it:free';
-
-  // Fallback chain of free models — max 3, so worst-case total wait
-  // stays under ~75s. All are plain-text chat models: PDFs and LinkedIn
-  // pages are parsed to text server-side before reaching the AI.
+  const model = process.env.AI_MODEL || 'openrouter/free';
   const FALLBACK_MODELS = [
     model,
-    'google/gemma-4-26b-a4b-it:free', // structured output support
-    'openrouter/free',                // auto-router over free models
+    'google/gemma-4-26b-a4b-it:free',
+    'openrouter/free',
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
-  const systemPrompt = `You are an expert resume writer. Convert raw text (a LinkedIn profile, an old resume, or work history notes) into structured resume JSON.
+  const systemPrompt = `You are a senior technical recruiter and ATS resume editor. Transform raw profile text (LinkedIn copy-paste, PDF resume, or notes) into a crisp, authentic, hireable 1-page ATS resume JSON.
 
-Rules:
-- Extract real facts only from the text. Never invent employers, degrees, dates, or metrics. If details are missing, leave fields empty rather than fabricating.
-- MANDATORY: every role, job, internship or freelance engagement mentioned in the text MUST appear in the experience array. LinkedIn profiles have an "Experience" section — capture EVERY entry in it, with its exact dates and description. If no company name is given, use "Freelance" / "Self-employed". Never return an empty experience array if the text mentions any work.
-- CONSISTENT DEPTH: produce the same rich output whether the input is a pasted profile or a PDF resume. Even if the source describes a role in one thin sentence, decompose it into 3-4 substantive bullets covering distinct aspects implied by that sentence (client delivery, requirements gathering, design, technology, quality standards, stakeholder communication, maintenance). Every bullet must be traceable to the text, but express each distinct facet separately rather than one dense sentence.
-- LENGTH BUDGET: the final resume MUST fit on 1-2 A4 pages, never more. Total: at most 2 experience entries with 3-4 bullets each, summary max 3 sentences, skills max 12, at most 2 projects. If the text contains more roles than fit, keep the most recent/important ones. Prioritize substance over padding — never pad to fill space.
-- Expand skills thoughtfully: include every skill, tool, domain and competency mentioned or clearly implied by the work described (e.g. building websites implies Web Design, Responsive Design, SEO fundamentals). Max 12, no duplicates or near-duplicates.
-- languages: array of {name, proficiency} — extract from the text if present, with exact proficiency wording when given (e.g. "Full Professional", "Native or Bilingual").
-- Use EVERYTHING useful in the text — interests, side projects, self-descriptions, certifications — a resume must look complete and professional, not thin. Aim for a full page.
-- For each experience entry, write 3-4 substantive bullet points. Split compound sentences into separate bullets. You may polish and expand wording, but every bullet must be traceable to the text.
-- Every project, portfolio site, or client deliverable mentioned (even inside experience descriptions) should ALSO appear in the projects array with a name and description. At most 2 projects.
-- summary: 3-4 sentences positioning the person for their target role, written in third person, pulling in their stated interests and focus areas.
-- Dates format: "Jul 2023" style, or years. Keep date ranges as given.
-- Clean up HTML entities (&amp; -> and) and artifacts from copy-paste or PDF extraction (stray hyphens mid-word, broken line fragments).
-- title: a single professional line, e.g. "AI Builder & Web Developer". If the text has a multi-part headline, condense it.
+CRITICAL QUALITY RULES (avoid generic "AI slop"):
+1. STRICT FACTUALITY: Only include employers, roles, dates, degrees, skills, and projects actually supported by the source text. NEVER invent metrics, percentages, employers, or tools not mentioned or directly implied by their real work.
+2. IGNORE PLATFORM NOISE: Completely ignore any leftover LinkedIn UI clutter ("Search", "Connected apps", "Top Voices", "People you may know", "Who your viewers also viewed", "Pages for you", "Show all", follower counts, unrelated people/companies).
+3. NO FAKE "CAREER BREAK" JOBS: If the text has an empty "Career break" / "Professional development" entry with no real deliverables, OMIT it from experience (do not invent buzzword bullets for it). Fold genuine ongoing building/learning focus naturally into the summary.
+4. NATURAL, HUMAN, RECRUITER-READY VOICE:
+   - summary: Write 2-3 concise, direct sentences in implied first-person resume voice (NEVER third-person like "Harish Pal is..." or "He spends..."). Frame their actual role, capabilities, and focus cleanly for hiring managers without hype words ("incredibly good", "enthusiast experimenting", "paradigms", "cutting-edge", "synergy").
+   - title: Concise professional target role derived strictly from the candidate's actual work and summary (e.g., "Web Developer & AI Builder").
+   - experience: Rewrite casual/broken prose into 2-4 concrete, specific, action-verb bullets ("Designed and built...", "Developed...", "Delivered..."). Fix typos and grammar cleanly. Each bullet should describe real work done, audience served, or capability delivered — NEVER pad thin roles with generic filler like "requirements gathering, quality standards, and stakeholder communication".
+   - projects: Extract every real project mentioned. Fix typos in project names (e.g., "Webite for Dentists" -> "Dental Clinic Showcase Website") and write a sharp 1-2 sentence description of what was built and why it matters.
+   - skills: 6-12 concrete, ATS-relevant skills derived from the profile. Exclude vague filler or platform widgets.
+   - languages: Array of {name, proficiency} with clean proficiency labels.
+   - Keep dates concise ("Jul 2023" - "Aug 2026", or "Present").
 
-Return ONLY valid JSON, no markdown fences, in exactly this shape:
+Return ONLY valid JSON, no markdown fences, in this exact shape:
 {
   "name": "",
   "title": "",
@@ -217,9 +213,6 @@ Return ONLY valid JSON, no markdown fences, in exactly this shape:
 }`;
 
   try {
-    // Provider chain: Gemini (private free limits) first, then OpenRouter
-    // free models. Whoever succeeds first wins. A provider that returns
-    // unparseable JSON counts as a failure — we try the next one.
     const attempts = [];
     if (geminiKey) {
       attempts.push(() => callGemini(systemPrompt, cleanedText, geminiKey));
@@ -229,15 +222,8 @@ Return ONLY valid JSON, no markdown fences, in exactly this shape:
         callOpenRouter(FALLBACK_MODELS, systemPrompt, cleanedText, apiKey)
       );
     }
-    if (!attempts.length) {
-      return NextResponse.json(
-        { error: 'No AI provider configured (set GEMINI_API_KEY or OPENROUTER_API_KEY)' },
-        { status: 500 }
-      );
-    }
 
     let parsed = null;
-    let lastError = null;
     for (const attempt of attempts) {
       try {
         const aiData = await attempt();
@@ -247,28 +233,19 @@ Return ONLY valid JSON, no markdown fences, in exactly this shape:
         try {
           parsed = JSON.parse(content);
         } catch {
-          // Some models wrap JSON in fences despite instructions
           const match = content.match(/\{[\s\S]*\}/);
           if (!match) throw new Error('malformed JSON');
-          try {
-            parsed = JSON.parse(match[0]);
-          } catch {
-            throw new Error('malformed JSON');
-          }
+          parsed = JSON.parse(match[0]);
         }
-        if (parsed) break; // success
+        if (parsed) break;
       } catch (err) {
         console.error('AI provider failed:', err.message);
-        lastError = err;
-        // next provider
       }
     }
 
     if (!parsed) {
-      // All providers failed or returned garbage — fall back to the
-      // parser draft rather than hard-failing
       return NextResponse.json({
-        resume: demoResumeFromText(text),
+        resume: demoResumeFromText(cleanedText),
         demo: true,
         notice:
           'The AI service was busy, so this is a quick draft parsed from your text. ' +
@@ -276,28 +253,25 @@ Return ONLY valid JSON, no markdown fences, in exactly this shape:
       });
     }
 
-    // Safety net: coerce the AI's output into well-formed arrays so the
-    // editor never crashes on missing/malformed fields
     for (const key of ['skills', 'experience', 'education', 'projects', 'languages', 'links']) {
       if (!Array.isArray(parsed[key])) parsed[key] = [];
     }
-    parsed.experience = parsed.experience.map((e) => ({
-      company: e.company || '',
-      role: e.role || e.title || '',
-      start: e.start || '',
-      end: e.end || '',
-      location: e.location || '',
-      bullets: Array.isArray(e.bullets) ? e.bullets.filter(Boolean) : [],
-    }));
+    parsed.experience = parsed.experience
+      .filter((e) => !/career break/i.test(`${e.company || ''} ${e.role || ''}`))
+      .map((e) => ({
+        company: e.company || '',
+        role: e.role || e.title || '',
+        start: e.start || '',
+        end: e.end || '',
+        location: e.location || '',
+        bullets: Array.isArray(e.bullets) ? e.bullets.filter(Boolean) : [],
+      }));
 
     return NextResponse.json({ resume: parsed, demo: false });
   } catch (err) {
     console.error('Generate error:', err);
-    // Fall back to the parser resume rather than hard-failing —
-    // the user still gets a working editor, and the notice tells
-    // them what happened so it never looks like a bug.
     return NextResponse.json({
-      resume: demoResumeFromText(text),
+      resume: demoResumeFromText(cleanedText),
       demo: true,
       notice:
         'The AI service was busy or rate-limited, so this is a quick draft parsed from your text. ' +
