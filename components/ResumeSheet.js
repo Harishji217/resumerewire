@@ -11,7 +11,7 @@ export default function ResumeSheet({ resume, templateId }) {
       {resume.summary ? (
         <section>
           <SectionTitle tpl={tpl}>Summary</SectionTitle>
-          <p>{resume.summary}</p>
+          <p className="rs-summary">{resume.summary}</p>
         </section>
       ) : null}
 
@@ -69,7 +69,7 @@ export default function ResumeSheet({ resume, templateId }) {
                   </a>
                 ) : null}
               </div>
-              {p.description ? <div>{p.description}</div> : null}
+              {p.description ? <p className="rs-proj-desc">{p.description}</p> : null}
             </div>
           ))}
         </section>
@@ -91,14 +91,14 @@ export default function ResumeSheet({ resume, templateId }) {
       {resume.languages?.length ? (
         <section>
           <SectionTitle tpl={tpl}>Languages</SectionTitle>
-          {resume.languages.map((l, i) => (
-            <div className="rs-item" key={i}>
-              <div className="rs-row">
+          <div className="rs-langs">
+            {resume.languages.map((l, i) => (
+              <div className="rs-lang-item" key={i}>
                 <strong>{l.name}</strong>
-                <span className="rs-date">{l.proficiency || ''}</span>
+                {l.proficiency ? <span className="rs-muted"> — {l.proficiency}</span> : null}
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </section>
       ) : null}
     </div>
